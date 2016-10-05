@@ -128,10 +128,12 @@ function Connect-I2ICSP{
         $Username,
         [Parameter(Mandatory=$true, ValueFromPipeline=$false, HelpMessage="Please provide password")]
         [SecureString]
-        $Password
+        $Password,
+        [Parameter(Mandatory=$false)]
+        $Directory = "local"
     )
 
-    New-I2ICSPSessionKey -Server $ICSPServer -Username $Username -Password $Password -LoginDomain "i04.local" #-Verbose
+    New-I2ICSPSessionKey -Server $ICSPServer -Username $Username -Password $Password -LoginDomain $Directory
 }
 
 function Get-I2ICSPServer{
