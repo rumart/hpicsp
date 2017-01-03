@@ -1,7 +1,7 @@
 ﻿function Invoke-I2ICSPAPIRequest{
     [CmdletBinding()]
     param(
-        $ICServer,
+        $ICSPServer,
         [string]
         $Path,
         [string]
@@ -23,8 +23,14 @@
     }
 
     $Path += $Resource
+
+    if(!$ICSPServer){
+        $ICSPServer = $global:icsp_server
+    }
+
+    Write-Verbose "ICSP Server : $ICSPServer , GLOBAL ICSP Server : $($global:icsp_server)"
         
-    $URIBuilder = New-Object System.UriBuilder -ArgumentList @($Protocol, $ICServer, $Port, $Path)
+    $URIBuilder = New-Object System.UriBuilder -ArgumentList @($Protocol, $ICSPServer, $Port, $Path)
     $Uribuilder.Query = $query
 
     if($SessionKey){
@@ -34,13 +40,12 @@
         $headers["X-Api-Version"] = "200"
     }
 
-    
-    Write-Verbose "Invoking REST request"
-        
     if($Method -eq "GET"){
+        Write-Verbose "Method $method against URI $($UriBuilder.Uri)"
         Invoke-RestMethod -Method $Method -Uri $URIBuilder.Uri -Body $Body -Headers $headers -ContentType "application/json" #-Verbose
     }
     else{
+        Write-Verbose "Method $method against URI $($UriBuilder.Uri)"
         Invoke-RestMethod -Method $Method -Uri $URIBuilder.Uri -Body $Body -Headers $headers -ContentType "application/json" #-Verbose
     }
     
@@ -51,14 +56,13 @@ function New-I2ICSPSessionKey{
 [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
-        $Server,
+        $ICSPServer,
         [Parameter(Mandatory=$true, ValueFromPipeline=$false)]
         $Username,
         [Parameter(Mandatory=$true, ValueFromPipeline=$false)]
         $Password,
         [Parameter(Mandatory=$false, ValueFromPipeline=$false)]
-        $LoginDomain
-    )
+        $LoginDomain)
 
 add-type @" 
     using System.Net; 
@@ -73,8 +77,6 @@ add-type @"
 "@  
 [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
 
-    $global:icspserver = $server
-
     $decryptPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($password))
 
 $body = @"
@@ -86,11 +88,14 @@ $body = @"
 "@
 
     Write-Verbose $body
-
-    $response = Invoke-I2ICSPAPIRequest -Method Post -Resource "login-sessions" -Body $body #-Verbose
+    
+    $response = Invoke-I2ICSPAPIRequest -ICSPServer $ICSPServer -Method Post -Resource "login-sessions" -Body $body -Verbose
 
     $sessionkey = $response.sessionid
     $global:icsp_sessionkey = $sessionkey
+    
+    $global:icsp_server = $ICSPServer
+    
 
 
 }
@@ -105,8 +110,8 @@ function Connect-I2ICSP{
         Info
         Author : Rudi Martinsen / Intility AS
         Date : 28/08-2016
-        Version : 0.9
-        Revised : 
+        Version : 0.9.1.0
+        Revised : 05/10-2016
     .PARAMETER ICSPServer
         The ICSP server to connect to
     .PARAMETER Username
@@ -129,11 +134,11 @@ function Connect-I2ICSP{
         [Parameter(Mandatory=$true, ValueFromPipeline=$false, HelpMessage="Please provide password")]
         [SecureString]
         $Password,
-        [Parameter(Mandatory=$false)]
-        $Directory = "local"
+        [Parameter(Mandatory=$false, ValueFromPipeline=$false)]
+        $Directory
     )
 
-    New-I2ICSPSessionKey -Server $ICSPServer -Username $Username -Password $Password -LoginDomain $Directory
+    New-I2ICSPSessionKey -ICSPServer $ICSPServer -Username $Username -Password $Password -LoginDomain $Directory -Verbose
 }
 
 function Get-I2ICSPServer{
@@ -146,8 +151,10 @@ function Get-I2ICSPServer{
         Info
         Author : Rudi Martinsen / Intility AS
         Date : 28/08-2016
-        Version : 0.9
-        Revised : 
+        Version : 0.9.2
+        Revised : 03/01-2017
+    .PARAMETER ICSPServer
+        ICSP Server to retrieve servers from
     .PARAMETER Serial
         Serial number of the server to search for
     .PARAMETER ILOIp
@@ -164,6 +171,8 @@ function Get-I2ICSPServer{
 #>
     [CmdletBinding(DefaultParameterSetName="none")]
     param(
+        [Parameter(Mandatory=$false,ParameterSetName="default",ValueFromPipeline=$true)]
+        $ICSPServer,
         [Parameter(Mandatory=$false,ParameterSetName="serial")]
         $Serial,
         [Parameter(Mandatory=$false,ParameterSetName="ilo")]
@@ -176,7 +185,7 @@ function Get-I2ICSPServer{
     if($Serial){
         $SrcResource = "index/resources"
         $SrcQuery = "category=osdserver&query=osdServerSerialNumber=" + $serial
-        $search = Invoke-I2ICSPAPIRequest -Resource $SrcResource -Query $SrcQuery
+        $search = Invoke-I2ICSPAPIRequest -ICSPServer $ICSPServer -Resource $SrcResource -Query $SrcQuery
 
         if($search){
             Write-Verbose "Found $($search.members.count) results"
@@ -184,7 +193,7 @@ function Get-I2ICSPServer{
                 throw "Multiple results found"
             }
             
-            $result = Invoke-I2ICSPAPIRequest -Resource $search.members.uri
+            $result = Invoke-I2ICSPAPIRequest -ICSPServer $ICSPServer -Resource $search.members.uri -Verbose
             $result
         }
        
@@ -194,13 +203,13 @@ function Get-I2ICSPServer{
         $Resource = "os-deployment-servers"
 
         Write-Verbose "Pulling all servers"        
-        $response = Invoke-I2ICSPAPIRequest -Resource $Resource 
+        $response = Invoke-I2ICSPAPIRequest -Resource $Resource -Verbose
 
         if($ILOIp){
             Write-Verbose "Filtering on iLO IP"
             $results = $response.members #| where {$_.peerIP -eq $Server -or $_.serialnumber -eq $Server}
             foreach($res in $results){
-                $result = Invoke-I2ICSPAPIRequest -Resource $res.uri
+                $result = Invoke-I2ICSPAPIRequest -ICSPServer $ICSPServer -Resource $res.uri
                 if($result.ilo[0].ipAddress -eq $ILOIp){
                     $result
                 }
@@ -224,8 +233,10 @@ function New-I2ICSPServer{
         Info
         Author : Rudi Martinsen / Intility AS
         Date : 28/08-2016
-        Version : 0.9
-        Revised : 
+        Version : 0.9.2
+        Revised : 03/01-2017
+    .PARAMETER ICSPServer
+        ICSP Server to retrieve servers from
     .PARAMETER ILOIp
         ILO IP address of the server to create
     .PARAMETER ILOPort
@@ -241,6 +252,8 @@ function New-I2ICSPServer{
 #>
     [CmdletBinding()]
     param(
+        [Parameter(Mandatory=$false,ParameterSetName="default",ValueFromPipeline=$true)]
+        $ICSPServer,
         [Parameter(Mandatory=$true)]
         $ILOIP,
         [Parameter(Mandatory=$false)]
@@ -264,7 +277,7 @@ function New-I2ICSPServer{
     Write-Verbose "Body $body"
 
     Write-Verbose "Invoking REST request"
-    $response = Invoke-I2ICSPAPIRequest -Method POST -Resource "os-deployment-servers" -Body $body #-Verbose
+    $response = Invoke-I2ICSPAPIRequest -ICSPServer $ICSPServer -Method POST -Resource "os-deployment-servers" -Body $body #-Verbose
 
     $response
 
@@ -280,10 +293,12 @@ function Get-I2ICSPJob{
         Info
         Author : Rudi Martinsen / Intility AS
         Date : 26/09-2016
-        Version : 0.9
-        Revised : 05.10-2016
+        Version : 0.9.2
+        Revised : 03/01-2017
+    .PARAMETER Server
+        ICSP Server to retrieve jobs from
     .PARAMETER Job
-        Serial number of the server to search for
+        Job to search for
     .EXAMPLE
         Get-I2ICSPJob
 
@@ -296,7 +311,11 @@ function Get-I2ICSPJob{
 #>
     [CmdletBinding()]
     param(
-        $Job
+        [Parameter(Mandatory=$false,ValueFromPipeline=$true)]
+        $Job,
+        [Parameter(Mandatory=$false)]
+        $ICSPServer
+        
     )
         
     if($Job -is [object] -and $job.category -eq "os-deployment-jobs"){
@@ -315,7 +334,7 @@ function Get-I2ICSPJob{
 
     try{
         Write-Verbose "Invoking REST request"
-        $response = Invoke-I2ICSPAPIRequest -Resource $Resource
+        $response = Invoke-I2ICSPAPIRequest -ICSPServer $ICSPServer -Resource $Resource
     }
     catch{
     }
@@ -340,10 +359,10 @@ function Wait-I2ICSPJobCompletion{
         Info
         Author : Rudi Martinsen / Intility AS
         Date : 26/09-2016
-        Version : 0.9
-        Revised : 05.10-2016
+        Version : 0.9.2
+        Revised : 03/01-2017
     .PARAMETER Job
-        Serial number of the server to search for
+        Job to wait for
     .EXAMPLE
         Get-I2ICSPJob 123456 | Wait-I2ICSPJobCompletion
 
@@ -403,8 +422,10 @@ function Get-I2ICSPBuildPlan{
         Info
         Author : Rudi Martinsen / Intility AS
         Date : 28/08-2016
-        Version : 0.9.1.0
-        Revised : 05/10-2016
+        Version : 0.9.2
+        Revised : 03/01-2017
+    .PARAMETER ICSPServer
+        ICSP Server to get plans from
     .PARAMETER BuildPlan
         Serial number of the server to search for
     .PARAMETER Name
@@ -421,8 +442,10 @@ function Get-I2ICSPBuildPlan{
         Outputs the buildplan "Buildplan01"
 
 #>
-    [CmdletBinding(DefaultParameterSetName="None")]
+    [CmdletBinding(DefaultParameterSetName="Default")]
     param(
+        [Parameter(Mandatory=$false,ParameterSetName="Default",ValueFromPipeline=$true)]
+        $ICSPServer,
         [Parameter(Mandatory=$false,ParameterSetName="BuildPlan")]
         [object]
         $BuildPlan,
@@ -444,7 +467,9 @@ function Get-I2ICSPBuildPlan{
         $Resource = "os-deployment-build-plans"
     }
     
-    $response = Invoke-I2ICSPAPIRequest -Resource $Resource
+    #Write-Verbose "ICSP Server : $ICSPServer"
+
+    $response = Invoke-I2ICSPAPIRequest -ICSPServer $ICSPServer -Resource $Resource -Verbose
     
     if($Name){
         $result = $response.members | where {$_.name -like "*" + $Name + "*"}
@@ -471,8 +496,8 @@ function New-I2ICSPDeploymentJob{
         Info
         Author : Rudi Martinsen / Intility AS
         Date : 28/08-2016
-        Version : 0.9.1.0
-        Revised : 05/10-2016
+        Version : 0.9.2
+        Revised : 03/01-2017
     .PARAMETER Server
         ICSP Server object to create deployment job for
     .PARAMETER BuildPlan
@@ -498,7 +523,9 @@ function New-I2ICSPDeploymentJob{
 #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory=$false)]
+        $ICSPServer,
+        [Parameter(Mandatory=$true, ValueFromPipeLine=$true)]
         [object]
         $Server,
         [Parameter(Mandatory=$true)]
@@ -532,7 +559,7 @@ function New-I2ICSPDeploymentJob{
     }
     else{
         try{
-            $destServer = Get-I2ICSPServer -Server $Server.serialNumber
+            $destServer = Get-I2ICSPServer -ICSPServer $ICSPServer -Server $Server.serialNumber
         }
         catch{
         
@@ -548,7 +575,7 @@ function New-I2ICSPDeploymentJob{
     }
     else{
         try{
-            $destBuildPlan = Get-I2ICSPBuildPlan -Name $BuildPlan
+            $destBuildPlan = Get-I2ICSPBuildPlan -ICSPServer $ICSPServer -Name $BuildPlan
         }
         catch{
         
@@ -561,6 +588,11 @@ function New-I2ICSPDeploymentJob{
     
     $Body = @{}
 
+    ## This can be used to hard code default dns servers (comma-separated)
+    #if(!$DNSServers){
+    #    $DNSServers = ""
+    #}
+    
     $dnsSearch = @($DNSSearch)
 
     if(!$IPGateway){
@@ -599,7 +631,7 @@ function New-I2ICSPDeploymentJob{
             $interface | Add-Member -MemberType NoteProperty -Name ipv4gateway -Value $IPGateway
             $interface | Add-Member -MemberType NoteProperty -Name vlanid -Value $VlanId
             $interface | Add-Member -MemberType NoteProperty -Name staticNetworks -Value $staticNetworks
-            $interface | Add-Member -MemberType NoteProperty -Name dnsServers -Value $dnsServers
+            $interface | Add-Member -MemberType NoteProperty -Name dnsServers -Value $dnsServers #-join ","
             $interface | Add-Member -MemberType NoteProperty -Name winsServers -Value $null
             $interface | Add-Member -MemberType NoteProperty -Name dnsSearch -Value $dnsSearch
         }
@@ -631,7 +663,7 @@ function New-I2ICSPDeploymentJob{
     $resource = "os-deployment-jobs"
     Write-Verbose $body
     
-    $response = Invoke-I2ICSPAPIRequest -Method POST -Resource $resource -Body $Body
+    $response = Invoke-I2ICSPAPIRequest -ICSPServer $ICSPServer -Method POST -Resource $resource -Body $Body
     $response
 
 }
